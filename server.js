@@ -27,7 +27,7 @@ mongoose.connect(process.env.MONGO_URI);
 
 // Middleware
 app.use(cors({
-  origin: 'https://recipehubfe.onrender.com',
+  origin: 'https://localhost:3000',
   credentials: true,
 }));
 app.use(express.json());
