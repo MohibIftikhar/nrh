@@ -15,6 +15,15 @@ dotenv.config();
 
 const app = express();
 
+// Validate environment variables
+const requiredEnv = ['MONGO_URI', 'JWT_SECRET', 'CLOUDINARY_CLOUD_NAME', 'CLOUDINARY_API_KEY', 'CLOUDINARY_API_SECRET'];
+for (const env of requiredEnv) {
+  if (!process.env[env]) {
+    console.error(`Error: Missing required environment variable: ${env}`);
+    process.exit(1);
+  }
+}
+
 // Configure Cloudinary
 cloudinary.config({
   cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
@@ -23,17 +32,22 @@ cloudinary.config({
 });
 
 // Connect to MongoDB
-mongoose.connect(process.env.MONGO_URI);
+mongoose.connect(process.env.MONGO_URI, {
+  useNewUrlParser: true,
+  useUnifiedTopology: true,
+}).then(() => {
+  console.log('Connected to MongoDB');
+}).catch((err) => {
+  console.error('MongoDB connection error:', err);
+  process.exit(1);
+});
 
 // Middleware
 app.use(cors({
-  origin: 'http://localhost:3000',
+  origin: ['https://recipehubfe.onrender.com', 'http://localhost:3000'],
   credentials: true,
 }));
 app.use(express.json());
-
-// JWT Secret
-const SECRET_KEY = process.env.JWT_SECRET || 'h@jsoeeiwq';
 
 // Multer setup with Cloudinary
 const storage = new CloudinaryStorage({
@@ -48,9 +62,8 @@ const upload = multer({
   storage,
   fileFilter: (req, file, cb) => {
     const filetypes = /jpeg|jpg|png/;
-    const extname = filetypes.test(file.originalName.toLowerCase().split('.').pop());
-    const mimetype = filetypes.test(file.mimetype);
-    if (extname && mimetype) {
+    const extname = filetypes.test(file.originalname.toLowerCase().split('.').pop());
+    if (extname) {
       return cb(null, true);
     }
     cb(new Error('Only .jpg and .png files are allowed'));
@@ -64,7 +77,7 @@ const verifyToken = (req, res, next) => {
   if (!token) return res.status(403).json({ message: 'Access denied. No token provided.' });
 
   try {
-    const decoded = jwt.verify(token, SECRET_KEY);
+    const decoded = jwt.verify(token, process.env.JWT_SECRET);
     req.user = decoded;
     next();
   } catch (err) {
@@ -84,6 +97,9 @@ app.get('/health', (req, res) => {
 // Register
 app.post('/register', async (req, res) => {
   const { username, password } = req.body;
+  if (!username || !password) {
+    return res.status(400).json({ message: 'Username and password are required' });
+  }
   try {
     const existingUser = await User.findOne({ username });
     if (existingUser) return res.status(400).json({ message: 'Username already exists' });
@@ -102,6 +118,9 @@ app.post('/register', async (req, res) => {
 // Login
 app.post('/login', async (req, res) => {
   const { username, password } = req.body;
+  if (!username || !password) {
+    return res.status(400).json({ message: 'Username and password are required' });
+  }
   try {
     const user = await User.findOne({ username });
     if (!user) return res.status(401).json({ message: 'Invalid credentials' });
@@ -111,7 +130,7 @@ app.post('/login', async (req, res) => {
 
     const token = jwt.sign(
       { id: user._id, username: user.username },
-      SECRET_KEY,
+      process.env.JWT_SECRET,
       { expiresIn: '1h' }
     );
 
@@ -153,7 +172,13 @@ app.get('/recipes/:id', verifyToken, async (req, res) => {
 app.post('/recipes', verifyToken, upload.single('image'), async (req, res) => {
   const { name, cuisine, cookingTime, ingredients, nutritionalInfo, methodSteps, youtubeLink } = req.body;
   try {
+    if (!name || !cuisine || !cookingTime || !ingredients) {
+      return res.status(400).json({ message: 'Name, cuisine, cooking time, and ingredients are required' });
+    }
     let parsedIngredients = JSON.parse(ingredients);
+    if (!Array.isArray(parsedIngredients)) {
+      return res.status(400).json({ message: 'Ingredients must be an array' });
+    }
 
     const newRecipe = new Recipe({
       name,
@@ -163,7 +188,7 @@ app.post('/recipes', verifyToken, upload.single('image'), async (req, res) => {
       nutritionalInfo: nutritionalInfo || '',
       methodSteps: typeof methodSteps === 'string' ? methodSteps.split(',').map(item => item.trim()) : methodSteps,
       youtubeLink: youtubeLink || '',
-      imageUrl: req.file ? req.file.path : '', // Cloudinary URL
+      imageUrl: req.file ? req.file.path : '',
       comments: [],
       rating: 0,
     });
@@ -184,7 +209,13 @@ app.put('/recipes/:id', verifyToken, upload.single('image'), async (req, res) =>
     if (name) updateData.name = name;
     if (cuisine) updateData.cuisine = cuisine;
     if (cookingTime) updateData.cookingTime = parseInt(cookingTime);
-    if (ingredients) updateData.ingredients = JSON.parse(ingredients);
+    if (ingredients) {
+      const parsedIngredients = JSON.parse(ingredients);
+      if (!Array.isArray(parsedIngredients)) {
+        return res.status(400).json({ message: 'Ingredients must be an array' });
+      }
+      updateData.ingredients = parsedIngredients;
+    }
     if (nutritionalInfo) updateData.nutritionalInfo = nutritionalInfo;
     if (methodSteps) {
       updateData.methodSteps = typeof methodSteps === 'string'
@@ -192,7 +223,7 @@ app.put('/recipes/:id', verifyToken, upload.single('image'), async (req, res) =>
         : methodSteps;
     }
     if (youtubeLink) updateData.youtubeLink = youtubeLink;
-    if (req.file) updateData.imageUrl = req.file.path; // Cloudinary URL
+    if (req.file) updateData.imageUrl = req.file.path;
 
     const updatedRecipe = await Recipe.findByIdAndUpdate(req.params.id, updateData, { new: true });
     if (!updatedRecipe) return res.status(404).json({ message: 'Recipe not found' });
@@ -212,8 +243,8 @@ app.delete('/recipes/:id', verifyToken, async (req, res) => {
 
     // Delete image from Cloudinary
     if (deletedRecipe.imageUrl) {
-      const publicId = deletedRecipe.imageUrl.split('/').pop().split('.')[0];
-      await cloudinary.uploader.destroy(`recipehub/${publicId}`);
+      const publicId = deletedRecipe.imageUrl.split('/').slice(-2).join('/').split('.')[0]; // e.g., recipehub/1234567890
+      await cloudinary.uploader.destroy(publicId);
       console.log(`Deleted image from Cloudinary: ${publicId}`);
     }
 
@@ -228,10 +259,13 @@ app.delete('/recipes/:id', verifyToken, async (req, res) => {
 app.post('/recipes/:id/comment', verifyToken, async (req, res) => {
   const { comment, rating } = req.body;
   try {
+    if (!comment || !rating || rating < 1 || rating > 5) {
+      return res.status(400).json({ message: 'Comment and rating (1-5) are required' });
+    }
     const recipe = await Recipe.findById(req.params.id);
     if (!recipe) return res.status(404).json({ message: 'Recipe not found' });
 
-    recipe.comments.push({ comment, rating: parseInt(rating) });
+    recipe.comments.push({ comment, rating: parseInt(rating), user: req.user.id });
     const totalRating = recipe.comments.reduce((sum, c) => sum + c.rating, 0);
     recipe.rating = (totalRating / recipe.comments.length).toFixed(1);
 
