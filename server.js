@@ -7,6 +7,8 @@ const cors = require('cors');
 const multer = require('multer');
 const cloudinary = require('cloudinary').v2;
 const { CloudinaryStorage } = require('multer-storage-cloudinary');
+const { v4: uuidv4 } = require('uuid');
+
 
 const User = require('./models/User');
 const Recipe = require('./models/Recipe');
@@ -185,14 +187,18 @@ app.post('/recipes', verifyToken, upload.single('image'), handleMulterError, asy
     if (!name || !cuisine || !cookingTime || !ingredients) {
       return res.status(400).json({ message: 'Name, cuisine, cooking time, and ingredients are required' });
     }
-    let parsedIngredients = JSON.parse(ingredients);
-    if (!Array.isArray(parsedIngredients)) {
-      return res.status(400).json({ message: 'Ingredients must be an array' });
+
+    let parsedIngredients;
+    try {
+      parsedIngredients = JSON.parse(ingredients);
+      if (!Array.isArray(parsedIngredients)) {
+        return res.status(400).json({ message: 'Ingredients must be an array' });
+      }
+    } catch (parseErr) {
+      return res.status(400).json({ message: 'Invalid ingredients format. Must be a JSON array.' });
     }
 
-    // Generate a unique custom ID
-    const lastRecipe = await Recipe.findOne().sort({ id: -1 });
-    const newId = lastRecipe ? lastRecipe.id + 1 : 1;
+    const newId = uuidv4();
 
     const newRecipe = new Recipe({
       id: newId,
@@ -216,6 +222,7 @@ app.post('/recipes', verifyToken, upload.single('image'), handleMulterError, asy
     res.status(500).json({ message: 'Server error during recipe creation' });
   }
 });
+
 
 // Update a recipe
 app.put('/recipes/:id', verifyToken, upload.single('image'), handleMulterError, async (req, res) => {
