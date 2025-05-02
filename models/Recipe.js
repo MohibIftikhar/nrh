@@ -44,6 +44,10 @@ const recipeSchema = new mongoose.Schema({
   rating: {
     type: Number,
     default: 0
+  },
+  createdBy: {
+    type: String,
+    required: true
   }
 }, { timestamps: true });
 
