@@ -11,6 +11,11 @@ const commentSchema = new mongoose.Schema({
 });
 
 const recipeSchema = new mongoose.Schema({
+    id: {
+    type: String,  // <-- UUID string
+    required: true,
+    unique: true
+  },
   name: {
     type: String,
     required: true
