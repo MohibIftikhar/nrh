@@ -277,6 +277,35 @@ app.post('/recipes/:id/comment', verifyToken, async (req, res) => {
   }
 });
 
+// Delete a specific comment from a recipe
+app.delete('/recipes/:id/comments/:commentIndex', verifyToken, async (req, res) => {
+  try {
+    const recipe = await Recipe.findById(req.params.id);
+    if (!recipe) return res.status(404).json({ message: 'Recipe not found' });
+
+    const commentIndex = parseInt(req.params.commentIndex);
+    if (isNaN(commentIndex) || commentIndex < 0 || commentIndex >= recipe.comments.length) {
+      return res.status(400).json({ message: 'Invalid comment index' });
+    }
+
+    recipe.comments.splice(commentIndex, 1); // Remove the comment at the specified index
+
+    // Recalculate rating if there are remaining comments
+    if (recipe.comments.length > 0) {
+      const totalRating = recipe.comments.reduce((sum, c) => sum + c.rating, 0);
+      recipe.rating = (totalRating / recipe.comments.length).toFixed(1);
+    } else {
+      recipe.rating = 0; // Reset rating if no comments remain
+    }
+
+    await recipe.save();
+    res.json({ message: 'Comment deleted successfully', recipe });
+  } catch (err) {
+    console.error('Error deleting comment:', err);
+    res.status(500).json({ message: 'Server error during comment deletion' });
+  }
+});
+
 // Start server
 const port = process.env.PORT || 5000;
 app.listen(port, () => {
