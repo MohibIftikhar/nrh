@@ -71,6 +71,16 @@ const upload = multer({
   limits: { fileSize: 5 * 1024 * 1024 }, // 5MB
 });
 
+// Multer error handling middleware
+const handleMulterError = (err, req, res, next) => {
+  if (err instanceof multer.MulterError) {
+    return res.status(400).json({ message: err.message });
+  } else if (err) {
+    return res.status(400).json({ message: err.message });
+  }
+  next();
+};
+
 // Verify JWT
 const verifyToken = (req, res, next) => {
   const token = req.header('Authorization')?.replace('Bearer ', '');
@@ -134,7 +144,7 @@ app.post('/login', async (req, res) => {
       { expiresIn: '1h' }
     );
 
-    res.json({ message: 'Login successful', token });
+    res.json({ message: 'Login successful', token, username });
   } catch (err) {
     console.error('Login error:', err);
     res.status(500).json({ message: 'Server error during login' });
@@ -152,11 +162,11 @@ app.get('/recipes', verifyToken, async (req, res) => {
   }
 });
 
-// Get a recipe by ID
+// Get a recipe by custom ID
 app.get('/recipes/:id', verifyToken, async (req, res) => {
-  console.log(`Fetching recipe with ID: ${req.params.id}`);
+  console.log(`Fetching recipe with custom ID: ${req.params.id}`);
   try {
-    const recipe = await Recipe.findById(req.params.id);
+    const recipe = await Recipe.findOne({ id: parseInt(req.params.id) });
     if (!recipe) {
       console.log(`Recipe not found: ${req.params.id}`);
       return res.status(404).json({ message: 'Recipe not found' });
@@ -169,7 +179,7 @@ app.get('/recipes/:id', verifyToken, async (req, res) => {
 });
 
 // Create a new recipe
-app.post('/recipes', verifyToken, upload.single('image'), async (req, res) => {
+app.post('/recipes', verifyToken, upload.single('image'), handleMulterError, async (req, res) => {
   const { name, cuisine, cookingTime, ingredients, nutritionalInfo, methodSteps, youtubeLink } = req.body;
   try {
     if (!name || !cuisine || !cookingTime || !ingredients) {
@@ -180,7 +190,12 @@ app.post('/recipes', verifyToken, upload.single('image'), async (req, res) => {
       return res.status(400).json({ message: 'Ingredients must be an array' });
     }
 
+    // Generate a unique custom ID
+    const lastRecipe = await Recipe.findOne().sort({ id: -1 });
+    const newId = lastRecipe ? lastRecipe.id + 1 : 1;
+
     const newRecipe = new Recipe({
+      id: newId,
       name,
       cuisine,
       cookingTime: parseInt(cookingTime),
@@ -191,6 +206,7 @@ app.post('/recipes', verifyToken, upload.single('image'), async (req, res) => {
       imageUrl: req.file ? req.file.path : '',
       comments: [],
       rating: 0,
+      createdBy: req.user.username
     });
 
     await newRecipe.save();
@@ -202,9 +218,17 @@ app.post('/recipes', verifyToken, upload.single('image'), async (req, res) => {
 });
 
 // Update a recipe
-app.put('/recipes/:id', verifyToken, upload.single('image'), async (req, res) => {
+app.put('/recipes/:id', verifyToken, upload.single('image'), handleMulterError, async (req, res) => {
   const { name, cuisine, cookingTime, ingredients, nutritionalInfo, methodSteps, youtubeLink } = req.body;
   try {
+    const recipe = await Recipe.findOne({ id: parseInt(req.params.id) });
+    if (!recipe) return res.status(404).json({ message: 'Recipe not found' });
+
+    // Only allow the creator to edit the recipe
+    if (req.user.username !== recipe.createdBy) {
+      return res.status(403).json({ message: 'You are not authorized to edit this recipe' });
+    }
+
     const updateData = {};
     if (name) updateData.name = name;
     if (cuisine) updateData.cuisine = cuisine;
@@ -223,9 +247,21 @@ app.put('/recipes/:id', verifyToken, upload.single('image'), async (req, res) =>
         : methodSteps;
     }
     if (youtubeLink) updateData.youtubeLink = youtubeLink;
-    if (req.file) updateData.imageUrl = req.file.path;
+    if (req.file) {
+      // Delete old image from Cloudinary if it exists
+      if (recipe.imageUrl) {
+        const publicId = recipe.imageUrl.split('/').slice(-2).join('/').split('.')[0];
+        await cloudinary.uploader.destroy(publicId);
+        console.log(`Deleted image from Cloudinary: ${publicId}`);
+      }
+      updateData.imageUrl = req.file.path;
+    }
 
-    const updatedRecipe = await Recipe.findByIdAndUpdate(req.params.id, updateData, { new: true });
+    const updatedRecipe = await Recipe.findOneAndUpdate(
+      { id: parseInt(req.params.id) },
+      updateData,
+      { new: true }
+    );
     if (!updatedRecipe) return res.status(404).json({ message: 'Recipe not found' });
 
     res.json(updatedRecipe);
@@ -238,16 +274,22 @@ app.put('/recipes/:id', verifyToken, upload.single('image'), async (req, res) =>
 // Delete a recipe
 app.delete('/recipes/:id', verifyToken, async (req, res) => {
   try {
-    const deletedRecipe = await Recipe.findByIdAndDelete(req.params.id);
-    if (!deletedRecipe) return res.status(404).json({ message: 'Recipe not found' });
+    const recipe = await Recipe.findOne({ id: parseInt(req.params.id) });
+    if (!recipe) return res.status(404).json({ message: 'Recipe not found' });
+
+    // Allow admins (maryam865) or the creator to delete the recipe
+    if (req.user.username !== 'maryam865' && req.user.username !== recipe.createdBy) {
+      return res.status(403).json({ message: 'You are not authorized to delete this recipe' });
+    }
 
     // Delete image from Cloudinary
-    if (deletedRecipe.imageUrl) {
-      const publicId = deletedRecipe.imageUrl.split('/').slice(-2).join('/').split('.')[0]; // e.g., recipehub/1234567890
+    if (recipe.imageUrl) {
+      const publicId = recipe.imageUrl.split('/').slice(-2).join('/').split('.')[0];
       await cloudinary.uploader.destroy(publicId);
       console.log(`Deleted image from Cloudinary: ${publicId}`);
     }
 
+    await Recipe.deleteOne({ id: parseInt(req.params.id) });
     res.json({ message: 'Recipe deleted successfully' });
   } catch (err) {
     console.error('Error deleting recipe:', err);
@@ -262,7 +304,7 @@ app.post('/recipes/:id/comment', verifyToken, async (req, res) => {
     if (!comment || !rating || rating < 1 || rating > 5) {
       return res.status(400).json({ message: 'Comment and rating (1-5) are required' });
     }
-    const recipe = await Recipe.findById(req.params.id);
+    const recipe = await Recipe.findOne({ id: parseInt(req.params.id) });
     if (!recipe) return res.status(404).json({ message: 'Recipe not found' });
 
     recipe.comments.push({ comment, rating: parseInt(rating), user: req.user.id });
@@ -280,7 +322,12 @@ app.post('/recipes/:id/comment', verifyToken, async (req, res) => {
 // Delete a specific comment from a recipe
 app.delete('/recipes/:id/comments/:commentIndex', verifyToken, async (req, res) => {
   try {
-    const recipe = await Recipe.findById(req.params.id);
+    // Only allow admin (maryam865) to delete comments
+    if (req.user.username !== 'maryam865') {
+      return res.status(403).json({ message: 'Only admin can delete comments' });
+    }
+
+    const recipe = await Recipe.findOne({ id: parseInt(req.params.id) });
     if (!recipe) return res.status(404).json({ message: 'Recipe not found' });
 
     const commentIndex = parseInt(req.params.commentIndex);
@@ -288,14 +335,13 @@ app.delete('/recipes/:id/comments/:commentIndex', verifyToken, async (req, res) 
       return res.status(400).json({ message: 'Invalid comment index' });
     }
 
-    recipe.comments.splice(commentIndex, 1); // Remove the comment at the specified index
+    recipe.comments.splice(commentIndex, 1);
 
-    // Recalculate rating if there are remaining comments
     if (recipe.comments.length > 0) {
       const totalRating = recipe.comments.reduce((sum, c) => sum + c.rating, 0);
       recipe.rating = (totalRating / recipe.comments.length).toFixed(1);
     } else {
-      recipe.rating = 0; // Reset rating if no comments remain
+      recipe.rating = 0;
     }
 
     await recipe.save();
