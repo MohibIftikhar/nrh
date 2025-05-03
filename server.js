@@ -188,14 +188,30 @@ app.post('/recipes', verifyToken, upload.single('image'), handleMulterError, asy
   if (!name || !cuisine || !cookingTime || !ingredients) return res.status(400).json({ message: 'Required fields missing' });
   try {
     const parsedIngredients = JSON.parse(ingredients);
+    let parsedMethodSteps;
+    try {
+      parsedMethodSteps = JSON.parse(methodSteps);
+      if (!Array.isArray(parsedMethodSteps)) {
+        return res.status(400).json({ message: 'methodSteps must be an array' });
+      }
+      // Ensure each step is a string and trimmed
+      parsedMethodSteps = parsedMethodSteps.map(step => typeof step === 'string' ? step.trim() : '');
+      if (parsedMethodSteps.length === 0) {
+        return res.status(400).json({ message: 'methodSteps cannot be empty' });
+      }
+      console.log('Parsed methodSteps:', parsedMethodSteps); // Debug log
+    } catch (parseError) {
+      console.error('Method steps parse error:', parseError);
+      return res.status(400).json({ message: 'Invalid methodSteps format' });
+    }
     const newRecipe = new Recipe({
       id: await getNextRecipeId(),
       name,
       cuisine,
       cookingTime: parseInt(cookingTime),
-      ingredients: Array.isArray(parsedIngredients) ? parsedIngredients : [],
+      ingredients: Array.isArray(parsedIngredients) ? parsedIngredients.map(({ name, quantity }) => ({ name, quantity })) : [],
       nutritionalInfo: nutritionalInfo || '',
-      methodSteps: typeof methodSteps === 'string' ? methodSteps.split(',').map(s => s.trim()) : methodSteps,
+      methodSteps: parsedMethodSteps,
       youtubeLink: youtubeLink || '',
       imageUrl: req.file ? req.file.path : '',
       comments: [],
@@ -203,8 +219,10 @@ app.post('/recipes', verifyToken, upload.single('image'), handleMulterError, asy
       createdBy: req.user.username,
     });
     await newRecipe.save();
+    console.log('Recipe added:', newRecipe); // Debug log
     res.status(201).json(newRecipe);
   } catch (err) {
+    console.error('Add recipe error:', err);
     res.status(500).json({ message: 'Server error during recipe creation' });
   }
 });
