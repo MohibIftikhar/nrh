@@ -12,6 +12,7 @@ const { v4: uuidv4 } = require('uuid');
 
 const User = require('./models/User');
 const Recipe = require('./models/Recipe');
+const Counter = require('./models/Counter');
 
 dotenv.config();
 
@@ -97,6 +98,15 @@ const verifyToken = (req, res, next) => {
   }
 };
 
+const getNextRecipeId = async () => {
+  const counter = await Counter.findOneAndUpdate(
+    { name: 'recipeId' },
+    { $inc: { seq: 1 } },
+    { new: true, upsert: true }
+  );
+  return counter.seq;
+};
+
 // Routes
 app.get('/', (req, res) => {
   res.send('Welcome to RecipeHub!');
@@ -156,26 +166,18 @@ app.post('/login', async (req, res) => {
 // Get all recipes
 app.get('/recipes', verifyToken, async (req, res) => {
   try {
-    const recipes = await Recipe.find();
-    res.json(recipes);
+    res.json(await Recipe.find());
   } catch (err) {
-    console.error('Error getting recipes:', err);
     res.status(500).json({ message: 'Server error' });
   }
 });
 
-// Get a recipe by custom ID
 app.get('/recipes/:id', verifyToken, async (req, res) => {
-  console.log(`Fetching recipe with custom ID: ${req.params.id}`);
   try {
     const recipe = await Recipe.findOne({ id: parseInt(req.params.id) });
-    if (!recipe) {
-      console.log(`Recipe not found: ${req.params.id}`);
-      return res.status(404).json({ message: 'Recipe not found' });
-    }
+    if (!recipe) return res.status(404).json({ message: 'Recipe not found' });
     res.json(recipe);
   } catch (err) {
-    console.error('Error getting recipe:', err);
     res.status(500).json({ message: 'Server error' });
   }
 });
@@ -183,42 +185,26 @@ app.get('/recipes/:id', verifyToken, async (req, res) => {
 // Create a new recipe
 app.post('/recipes', verifyToken, upload.single('image'), handleMulterError, async (req, res) => {
   const { name, cuisine, cookingTime, ingredients, nutritionalInfo, methodSteps, youtubeLink } = req.body;
+  if (!name || !cuisine || !cookingTime || !ingredients) return res.status(400).json({ message: 'Required fields missing' });
   try {
-    if (!name || !cuisine || !cookingTime || !ingredients) {
-      return res.status(400).json({ message: 'Name, cuisine, cooking time, and ingredients are required' });
-    }
-
-    let parsedIngredients;
-    try {
-      parsedIngredients = JSON.parse(ingredients);
-      if (!Array.isArray(parsedIngredients)) {
-        return res.status(400).json({ message: 'Ingredients must be an array' });
-      }
-    } catch (parseErr) {
-      return res.status(400).json({ message: 'Invalid ingredients format. Must be a JSON array.' });
-    }
-
-    const newId = uuidv4();
-
+    const parsedIngredients = JSON.parse(ingredients);
     const newRecipe = new Recipe({
-      id: newId,
+      id: await getNextRecipeId(),
       name,
       cuisine,
       cookingTime: parseInt(cookingTime),
-      ingredients: parsedIngredients,
+      ingredients: Array.isArray(parsedIngredients) ? parsedIngredients : [],
       nutritionalInfo: nutritionalInfo || '',
-      methodSteps: typeof methodSteps === 'string' ? methodSteps.split(',').map(item => item.trim()) : methodSteps,
+      methodSteps: typeof methodSteps === 'string' ? methodSteps.split(',').map(s => s.trim()) : methodSteps,
       youtubeLink: youtubeLink || '',
       imageUrl: req.file ? req.file.path : '',
       comments: [],
       rating: 0,
-      createdBy: req.user.username
+      createdBy: req.user.username,
     });
-
     await newRecipe.save();
     res.status(201).json(newRecipe);
   } catch (err) {
-    console.error('Error creating recipe:', err);
     res.status(500).json({ message: 'Server error during recipe creation' });
   }
 });
