@@ -12,7 +12,7 @@ const commentSchema = new mongoose.Schema({
 
 const recipeSchema = new mongoose.Schema({
     id: {
-    type: String,  // <-- UUID string
+    type: Number,
     required: true,
     unique: true
   },
